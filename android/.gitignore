@@ -1,0 +1,24 @@
+# Gradle
+.gradle/
+build/
+.gradletasknamecache
+
+# Local configuration
+local.properties
+
+# Android Studio
+.idea/
+*.iml
+
+# Kotlin
+.kotlin/
+
+# Android build outputs
+captures/
+.externalNativeBuild/
+.cxx/
+*.hprof
+
+# Logs and OS files
+*.log
+.DS_Store
