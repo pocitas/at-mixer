@@ -21,6 +21,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Handler
+import android.os.HandlerThread
 import android.os.IBinder
 import android.os.Looper
 import android.util.Log
@@ -61,6 +62,12 @@ class BleTcpBridgeService : Service() {
     private val handler = Handler(Looper.getMainLooper())
     private val ioExecutor = Executors.newCachedThreadPool()
 
+    // Forces the Bluetooth stack to deliver all GATT callbacks on one thread,
+    // preventing concurrent onCharacteristicChanged calls that otherwise
+    // interleave and corrupt the outgoing TCP stream.
+    private val bleCallbackThread = HandlerThread("BleGattCallback").apply { start() }
+    private val bleCallbackHandler = Handler(bleCallbackThread.looper)
+
     private var gatt: BluetoothGatt? = null
     private var scanning = false
     @Volatile
@@ -71,6 +78,7 @@ class BleTcpBridgeService : Service() {
 
     private var serverSocket: ServerSocket? = null
     private val clients = CopyOnWriteArrayList<Socket>()
+    private val broadcastLock = Any()
     private val messageWindowLock = Any()
     private val messageTimestampsMs = ArrayDeque<Long>()
 
@@ -110,6 +118,7 @@ class BleTcpBridgeService : Service() {
         runCatching { serverSocket?.close() }
 
         ioExecutor.shutdownNow()
+        bleCallbackThread.quitSafely()
     }
 
     private fun buildNotification(): Notification {
@@ -204,12 +213,14 @@ class BleTcpBridgeService : Service() {
 
     private fun broadcast(data: ByteArray) {
         logTcpOutputDump(data)
-        for (client in clients) {
-            try {
-                client.getOutputStream().write(data)
-            } catch (_: IOException) {
-                clients.remove(client)
-                runCatching { client.close() }
+        synchronized(broadcastLock) {
+            for (client in clients) {
+                try {
+                    client.getOutputStream().write(data)
+                } catch (_: IOException) {
+                    clients.remove(client)
+                    runCatching { client.close() }
+                }
             }
         }
     }
@@ -289,6 +300,10 @@ class BleTcpBridgeService : Service() {
             val name = result.scanRecord?.deviceName ?: return
             if (!name.startsWith(DEVICE_NAME_PREFIX) || !hasBleConnectPermission()) return
 
+            // stopScan() is asynchronous, so duplicate results for the same
+            // device can still arrive while a connection is already in flight.
+            if (gatt != null) return
+
             Log.i(TAG, "found $name")
             stopScan()
             connectToDevice(result.device)
@@ -301,12 +316,18 @@ class BleTcpBridgeService : Service() {
         }
     }
 
-    @Suppress("DEPRECATION")
     private fun connectToDevice(device: BluetoothDevice) {
         if (!hasBleConnectPermission()) return
 
         try {
-            gatt = device.connectGatt(this, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+            gatt = device.connectGatt(
+                this,
+                false,
+                gattCallback,
+                BluetoothDevice.TRANSPORT_LE,
+                BluetoothDevice.PHY_LE_1M_MASK,
+                bleCallbackHandler,
+            )
         } catch (e: SecurityException) {
             Log.w(TAG, "connectGatt denied", e)
             scheduleReconnect()
