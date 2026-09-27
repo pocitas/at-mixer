@@ -426,11 +426,15 @@ class BleTcpBridgeService : Service() {
             }
         }
 
+        // On API 33+ the platform calls both overloads below for the same notification,
+        // so each one must only act when the other one won't be invoked.
         override fun onCharacteristicChanged(
             bluetoothGatt: BluetoothGatt,
             characteristic: BluetoothGattCharacteristic,
             value: ByteArray,
         ) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+
             recordBleMessage()
             broadcast(value)
         }
@@ -441,6 +445,8 @@ class BleTcpBridgeService : Service() {
             bluetoothGatt: BluetoothGatt,
             characteristic: BluetoothGattCharacteristic,
         ) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) return
+
             characteristic.value?.let {
                 recordBleMessage()
                 broadcast(it)
