@@ -132,6 +132,18 @@ func (f *Framer) Feed(data []byte, output func([]byte)) {
 	f.stats.BytesIn += uint64(len(data))
 	f.stats.mu.Unlock()
 
+	// A peer that streams data without a terminator would otherwise make
+	// the buffer grow without limit; no valid sentence is anywhere near this long.
+	const maxBufferSize = 4096
+
+	if len(f.buffer) > maxBufferSize {
+		f.buffer = f.buffer[len(f.buffer)-maxBufferSize:]
+
+		f.stats.mu.Lock()
+		f.stats.FramingError++
+		f.stats.mu.Unlock()
+	}
+
 	for {
 		// Find either CR or LF as the line terminator.
 		pos := bytes.IndexAny(f.buffer, "\r\n")
@@ -157,6 +169,29 @@ func (f *Framer) Feed(data []byte, output func([]byte)) {
 
 		if len(line) == 0 {
 			continue
+		}
+
+		// Keep the recoverable sentence when corruption leaves junk before '$'
+		// or splices two sentences together without a terminator.
+		if idx := bytes.IndexByte(line, '$'); idx > 0 {
+			f.stats.mu.Lock()
+			f.stats.FramingError++
+			f.stats.mu.Unlock()
+
+			line = line[idx:]
+		}
+
+		if line[0] == '$' {
+			if idx := bytes.IndexByte(line[1:], '$'); idx >= 0 {
+				idx++
+
+				remainder := make([]byte, 0, len(line)-idx+1)
+				remainder = append(remainder, line[idx:]...)
+				remainder = append(remainder, terminator)
+
+				f.buffer = append(remainder, f.buffer...)
+				line = line[:idx]
+			}
 		}
 
 		if line[0] != '$' {
