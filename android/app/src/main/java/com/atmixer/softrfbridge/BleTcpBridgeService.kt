@@ -43,7 +43,7 @@ class BleTcpBridgeService : Service() {
         private const val DEVICE_NAME_PREFIX = "SoftRF"
         private const val TCP_PORT = 12345
         // Set to true to log every TCP payload (very verbose, debug only).
-        private const val DEBUG_TCP_OUTPUT_DUMP_LOGCAT = true
+        private const val DEBUG_TCP_OUTPUT_DUMP_LOGCAT = false
 
         private val NUS_SERVICE_UUID = UUID.fromString("6E400001-B5A3-F393-E0A9-E50E24DCCA9E")
         private val NUS_TX_CHAR_UUID = UUID.fromString("6E400003-B5A3-F393-E0A9-E50E24DCCA9E")
@@ -56,6 +56,15 @@ class BleTcpBridgeService : Service() {
         private const val RECONNECT_DELAY_MS = 5_000L
         private const val STATUS_WINDOW_MS = 30_000L
         private const val NOTIFICATION_REFRESH_MS = 3_000L
+
+        // Configure mux inputs here. Add more entries for additional TCP sources.
+        private val MUX_TCP_SOURCES = listOf(
+            LocalNmeaMux.TcpSourceConfig(name = "xcguide", host = "127.0.0.1", port = 10110),
+            LocalNmeaMux.TcpSourceConfig(name = "softrf", host = "127.0.0.1", port = 12345),
+        )
+
+        // Enable once you verify your consumer needs synthetic PFLAU heartbeat.
+        private const val MUX_HEARTBEAT_ENABLED = true
     }
 
     private var bluetoothAdapter: BluetoothAdapter? = null
@@ -69,6 +78,7 @@ class BleTcpBridgeService : Service() {
     private val bleCallbackHandler = Handler(bleCallbackThread.looper)
 
     private var gatt: BluetoothGatt? = null
+    private var localNmeaMux: LocalNmeaMux? = null
     private var scanning = false
     @Volatile
     private var softRfConnected = false
@@ -100,6 +110,11 @@ class BleTcpBridgeService : Service() {
         startForeground(NOTIFICATION_ID, buildNotification())
         handler.postDelayed(notificationUpdater, NOTIFICATION_REFRESH_MS)
         startTcpServer()
+        localNmeaMux = LocalNmeaMux(
+            logTag = "NmeaMux",
+            sources = MUX_TCP_SOURCES,
+            heartbeatEnabled = MUX_HEARTBEAT_ENABLED,
+        ).also { it.start() }
         maybeStartScan()
     }
 
@@ -116,6 +131,8 @@ class BleTcpBridgeService : Service() {
         clients.forEach { runCatching { it.close() } }
         clients.clear()
         runCatching { serverSocket?.close() }
+        localNmeaMux?.stop()
+        localNmeaMux = null
 
         ioExecutor.shutdownNow()
         bleCallbackThread.quitSafely()
